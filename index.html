@@ -287,7 +287,7 @@ tr:last-child td { border-bottom:none; }
       </div>
     </div>
     <div class="header-right">
-      <div class="clock-wrap"><span class="pulse" id="pulse"></span><span id="syncStatus" style="font-size:11px;color:var(--text-muted);margin-right:4px;"></span><span id="clock">--:--:--</span></div>
+      <div class="clock-wrap"><span class="pulse" id="pulse"></span><span id="syncStatus" style="font-size:11px;margin-right:4px;"></span><span id="clock">--:--:--</span></div>
 
     </div>
   </div>
@@ -373,26 +373,11 @@ var DB_URL = 'https://mokokos-default-rtdb.asia-southeast1.firebasedatabase.app'
 var firebaseConfig = { databaseURL: DB_URL };
 firebase.initializeApp(firebaseConfig);
 var db = firebase.database();
-// 오프라인 캐싱 및 자동 재연결
-try { db.ref('zones').keepSynced(true); } catch(e) {}
-try { db.ref('inventory').keepSynced(true); } catch(e) {}
-try { db.ref('queue').keepSynced(true); } catch(e) {}
+try { db.ref('inventory').keepSynced(true); } catch(e){}
+try { db.ref('zones').keepSynced(true); } catch(e){}
+try { db.ref('queue').keepSynced(true); } catch(e){}
 
-// ── Firebase 연결 진단 로그
-console.log('[Firebase] 초기화 완료:', firebaseConfig.databaseURL);
-db.ref('.info/connected').on('value', function(snap) {
-  console.log('[Firebase] 연결 상태:', snap.val() ? '✅ 연결됨' : '❌ 끊김');
-});
-db.ref('ping').set(Date.now()).then(function(){
-  console.log('[Firebase] ✅ 쓰기 성공');
-}).catch(function(e){
-  console.error('[Firebase] ❌ 쓰기 실패:', e.code, e.message);
-});
-db.ref('ping').once('value').then(function(s){
-  console.log('[Firebase] ✅ 읽기 성공:', s.val());
-}).catch(function(e){
-  console.error('[Firebase] ❌ 읽기 실패:', e.code, e.message);
-});
+
 
 var DEFAULT_ZONES = [
   { id:'fig1',  name:'여름방학 피규어 (3종)',          cap:6000,  count:6000 },
@@ -435,8 +420,14 @@ var queue = Object.assign({}, DEFAULT_QUEUE);
 
 var adminMode = false;
 var idSeq = 100;
-var _isEditing = false;  // 관리자 입력 중 Firebase 리렌더 방지
-var _editTimer = null;
+var _editLock = false;   // true인 동안 Firebase 리스너 re-render 차단
+var _lockTimer = null;
+
+function lockEditing(ms) {
+  _editLock = true;
+  clearTimeout(_lockTimer);
+  _lockTimer = setTimeout(function(){ _editLock = false; }, ms || 2000);
+}
 function uid() { return 'u'+(++idSeq); }
 
 function switchTab(tab) {
@@ -679,14 +670,9 @@ function renderInventory() {
 
 var _debounceTimers = {};
 function debounce(key, fn, delay) {
-  _isEditing = true;  // 입력 시작 — Firebase 리렌더 잠금
+  lockEditing(delay + 2500);  // 입력~저장 완료까지 lock
   clearTimeout(_debounceTimers[key]);
-  clearTimeout(_editTimer);
-  _debounceTimers[key] = setTimeout(function(){
-    fn();
-    // 저장 완료 후 1.5초 뒤 잠금 해제
-    _editTimer = setTimeout(function(){ _isEditing = false; }, 1500);
-  }, delay);
+  _debounceTimers[key] = setTimeout(fn, delay);
 }
 
 function updateZoneCard(z) {
@@ -889,7 +875,6 @@ function exitAdminMode() {
   updateQueueTab();
 }
 
-// FAB 클릭 핸들러 — DOM 로드 후 안전하게 바인딩
 function bindFabAdmin() {
   var fab = document.getElementById('fabAdmin');
   if(!fab) { setTimeout(bindFabAdmin, 100); return; }
@@ -987,22 +972,22 @@ function setSyncStatus(text, ok) {
 }
 
 function saveZones() {
-  _isEditing = true;
-  db.ref('zones').set(zones).then(function(){
-    setTimeout(function(){ _isEditing = false; }, 1500);
-  }).catch(function(){ setSyncStatus('저장 실패', false); _isEditing = false; });
+  lockEditing(2000);
+  db.ref('zones').set(zones)
+    .then(function(){ setSyncStatus('● 저장됨', true); })
+    .catch(function(){ setSyncStatus('저장 실패', false); });
 }
 function saveInventory() {
-  _isEditing = true;
-  db.ref('inventory').set(inventory).then(function(){
-    setTimeout(function(){ _isEditing = false; }, 1500);
-  }).catch(function(){ setSyncStatus('저장 실패', false); _isEditing = false; });
+  lockEditing(2000);
+  db.ref('inventory').set(inventory)
+    .then(function(){ setSyncStatus('● 저장됨', true); })
+    .catch(function(){ setSyncStatus('저장 실패', false); });
 }
 function saveQueue() {
-  _isEditing = true;
-  db.ref('queue').set(queue).then(function(){
-    setTimeout(function(){ _isEditing = false; }, 1500);
-  }).catch(function(){ setSyncStatus('저장 실패', false); _isEditing = false; });
+  lockEditing(2000);
+  db.ref('queue').set(queue)
+    .then(function(){ setSyncStatus('● 저장됨', true); })
+    .catch(function(){ setSyncStatus('저장 실패', false); });
 }
 function saveTitle() {
   db.ref('title').set({
@@ -1018,7 +1003,7 @@ db.ref('zones').on('value', function(snap) {
   } else if(!data) {
     db.ref('zones').set(zones);
   }
-  if(!_isEditing) { renderSummary(); renderZones(); }
+  if(!_editLock) { renderSummary(); renderZones(); }
   setSyncStatus('실시간 연동 중', true);
 });
 
@@ -1029,7 +1014,7 @@ db.ref('queue').on('value', function(snap) {
   } else if(!data) {
     db.ref('queue').set(queue);
   }
-  if(!_isEditing) { renderQueue(); updateQueueTab(); }
+  if(!_editLock) { renderQueue(); updateQueueTab(); }
 });
 
 db.ref('inventory').on('value', function(snap) {
@@ -1039,7 +1024,7 @@ db.ref('inventory').on('value', function(snap) {
   } else if(!data) {
     db.ref('inventory').set(inventory);
   }
-  if(!_isEditing) { renderInventory(); }
+  if(!_editLock) { renderInventory(); }
 });
 
 db.ref('title').on('value', function(snap) {
@@ -1057,23 +1042,17 @@ db.ref('title').on('value', function(snap) {
   }
 });
 
+var _wasConnected = false;
 db.ref('.info/connected').on('value', function(snap) {
-  var isConnected = snap.val() === true;
-  setSyncStatus(isConnected ? '● 실시간 연동 중' : '○ 연결 끊김', isConnected);
-  console.log('[Firebase] 연결 상태:', isConnected ? '연결됨' : '끊김');
-});
-
-// 연결 끊김 시 자동 재연결
-var _reconnectTimer = null;
-db.ref('.info/connected').on('value', function(snap) {
-  if(!snap.val()) {
-    clearTimeout(_reconnectTimer);
-    _reconnectTimer = setTimeout(function(){
-      try { db.goOnline(); } catch(e) {}
-    }, 3000);
-  } else {
-    clearTimeout(_reconnectTimer);
+  var connected = snap.val() === true;
+  if(connected && !_wasConnected) {
+    setSyncStatus('● 실시간 연동 중', true);
+  } else if(!connected) {
+    setSyncStatus('○ 연결 끊김', false);
+    // 3초 후 재연결 시도
+    setTimeout(function(){ try { db.goOnline(); } catch(e){} }, 3000);
   }
+  _wasConnected = connected;
 });
 </script>
 </body>
